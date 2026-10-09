@@ -16,57 +16,51 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Compile EXE
+      - name: Compile EXE for .NET 3.5
         shell: pwsh
         working-directory: windows-app
         run: |
-          $fw = "$env:WINDIR\Microsoft.NET\Framework"
-          $csc = "$fw\v4.0.30319\csc.exe"
+          $csc = "$env:WINDIR\Microsoft.NET\Framework\v4.0.30319\csc.exe"
           New-Item -ItemType Directory -Force bin | Out-Null
 
-          function Build-Exe($label, $refDir, $nostd) {
-            Write-Host "=== Trying $label ==="
-            $names = "System.dll", "System.Core.dll", "System.Drawing.dll", "System.Windows.Forms.dll", "System.Xml.dll", "System.Xml.Linq.dll", "WindowsBase.dll"
-            if ($nostd) { $names = @("mscorlib.dll") + $names }
-            $refs = @()
-            foreach ($n in $names) {
-              $path = "$refDir\$n"
-              if (-not (Test-Path $path)) { $path = "$refDir\WPF\$n" }
-              if (-not (Test-Path $path)) { Write-Host "$label : missing $n"; return $false }
-              $refs += "/reference:$path"
-            }
-            $flags = @("/nologo", "/target:winexe", "/platform:x86", "/optimize+", "/debug-", "/codepage:65001",
-                       "/win32manifest:app.manifest", "/out:bin\PJShoesSlipRecords.exe")
-            if ($nostd) { $flags += @("/nostdlib+", "/noconfig") }
-            $src = @("/resource:assets\pj-shoes-logo.jpg,PJShoesSlipRecords.assets.pj-shoes-logo.jpg",
-                     "src\SlipRecord.cs", "src\SpreadsheetStore.cs", "src\SettingsStore.cs",
-                     "src\LegacyWorkbookImporter.cs", "src\PrinterService.cs", "src\MainForm.cs", "src\Program.cs")
-            & $csc @flags @refs @src | Out-Host
-            return ($LASTEXITCODE -eq 0)
+          # Download Microsoft's official .NET 3.5 reference assemblies
+          Invoke-WebRequest "https://www.nuget.org/api/v2/package/Microsoft.NETFramework.ReferenceAssemblies.net35/1.0.3" -OutFile refs35.zip
+          Expand-Archive refs35.zip -DestinationPath refs35 -Force
+          Write-Host "Downloaded files:"
+          Get-ChildItem refs35 -Recurse -Filter *.dll | Select-Object -First 80 | ForEach-Object { Write-Host $_.FullName }
+
+          $names = "mscorlib.dll", "System.dll", "System.Core.dll", "System.Drawing.dll", "System.Windows.Forms.dll", "System.Xml.dll", "System.Xml.Linq.dll", "WindowsBase.dll"
+          $refs = @()
+          foreach ($n in $names) {
+            $f = Get-ChildItem refs35 -Recurse -Filter $n | Where-Object { $_.FullName -like "*v3.5*" } | Select-Object -First 1
+            if (-not $f) { $f = Get-ChildItem refs35 -Recurse -Filter $n | Select-Object -First 1 }
+            if (-not $f) { throw "Reference file not found: $n" }
+            Write-Host "Using $($f.FullName)"
+            $refs += "/reference:$($f.FullName)"
           }
 
-          $ok = $false
+          $flags = @("/nologo", "/target:winexe", "/platform:x86", "/optimize+", "/debug-", "/codepage:65001",
+                     "/nostdlib+", "/noconfig",
+                     "/win32manifest:app.manifest", "/out:bin\PJShoesSlipRecords.exe")
+          $src = @("/resource:assets\pj-shoes-logo.jpg,PJShoesSlipRecords.assets.pj-shoes-logo.jpg",
+                   "src\SlipRecord.cs", "src\SpreadsheetStore.cs", "src\SettingsStore.cs",
+                   "src\LegacyWorkbookImporter.cs", "src\PrinterService.cs", "src\MainForm.cs", "src\Program.cs")
 
-          # Attempt 1: true .NET 3.5 build using Microsoft's 3.5 reference assemblies from NuGet.
-          # The EXE runs on a stock Windows 7 with .NET 3.5.1.
-          try {
-            Invoke-WebRequest "https://www.nuget.org/api/v2/package/Microsoft.NETFramework.ReferenceAssemblies.net35/1.0.3" -OutFile refs35.zip
-            Expand-Archive refs35.zip -DestinationPath refs35 -Force
-            $dir35 = (Resolve-Path "refs35\build\.NETFramework\v3.5").Path
-            $ok = Build-Exe ".NET 3.5 target" $dir35 $true
-          } catch { Write-Host "3.5 reference download failed: $_" }
+          & $csc @flags @refs @src
+          if ($LASTEXITCODE -ne 0) { throw "Compile failed" }
 
-          # Attempt 2: .NET 4 build (needs .NET Framework 4.x on the PC that runs it)
-          if (-not $ok) {
-            Write-Warning "Falling back to a .NET 4 build. The EXE needs .NET Framework 4.x on the target PC."
-            $ok = Build-Exe ".NET 4 target" "$fw\v4.0.30319" $false
-          }
-
-          if (-not $ok) { throw "Compile failed" }
+          # Verify the EXE targets the .NET 2.0/3.5 runtime (v2.0.50727), not .NET 4
+          $exe = (Resolve-Path "bin\PJShoesSlipRecords.exe").Path
+          $stream = [System.IO.File]::OpenRead($exe)
+          $pe = New-Object System.Reflection.PortableExecutable.PEReader($stream)
+          $version = $pe.GetMetadataReader().MetadataVersion
+          $stream.Dispose()
+          Write-Host "EXE runtime version: $version"
+          if (-not $version.StartsWith("v2.0")) { throw "EXE targets $version, not .NET 3.5" }
 
       - uses: actions/upload-artifact@v7
         with:
-          name: PJShoesSlipRecords
+          name: PJShoesSlipRecords-net35
           path: windows-app/bin/PJShoesSlipRecords.exe
 
       - name: Attach to GitHub Release (tags only)
