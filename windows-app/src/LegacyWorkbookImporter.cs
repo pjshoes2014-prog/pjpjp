@@ -92,7 +92,7 @@ namespace PJShoesSlipRecords
                 new Uri(partPath.TrimStart('/'), UriKind.Relative));
             PackagePart part = package.GetPart(requested);
             using (Stream stream = part.GetStream(FileMode.Open, FileAccess.Read))
-                return XDocument.Load(stream);
+                                return XDocument.Load(System.Xml.XmlReader.Create(stream));
         }
 
         private static string ResolveWorksheetPath(string target)
