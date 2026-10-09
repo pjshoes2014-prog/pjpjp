@@ -21,44 +21,52 @@ jobs:
         working-directory: windows-app
         run: |
           $fw = "$env:WINDIR\Microsoft.NET\Framework"
-          $dir = "$fw\v3.5"
-          $wbHint = "v3.0"
-
-          if (-not (Test-Path "$dir\csc.exe")) {
-            Write-Host "3.5 compiler not found, trying to enable NetFx3..."
-            try { Enable-WindowsOptionalFeature -Online -FeatureName NetFx3 -All -NoRestart | Out-Null } catch { Write-Host $_ }
-          }
-
-          if (-not (Test-Path "$dir\csc.exe")) {
-            Write-Warning "Falling back to the .NET 4 compiler. The EXE will need .NET Framework 4.x on the target PC."
-            $dir = "$fw\v4.0.30319"
-            $wbHint = "WPF"
-          }
-
-          $wb = Get-ChildItem "$fw", "${env:ProgramFiles(x86)}\Reference Assemblies" -Recurse -Filter WindowsBase.dll -ErrorAction SilentlyContinue |
-                Where-Object { $_.FullName -like "*$wbHint*" } | Select-Object -First 1
-          if (-not $wb) { throw "WindowsBase.dll not found" }
-
+          $ref = "${env:ProgramFiles(x86)}\Reference Assemblies\Microsoft\Framework"
           New-Item -ItemType Directory -Force bin | Out-Null
 
-          $args = @(
-            "/nologo", "/target:winexe", "/platform:x86", "/optimize+", "/debug-", "/codepage:65001",
-            "/win32manifest:app.manifest",
-            "/out:bin\PJShoesSlipRecords.exe",
-            "/reference:$dir\System.dll",
-            "/reference:$dir\System.Core.dll",
-            "/reference:$dir\System.Drawing.dll",
-            "/reference:$dir\System.Windows.Forms.dll",
-            "/reference:$dir\System.Xml.dll",
-            "/reference:$dir\System.Xml.Linq.dll",
-            "/reference:$($wb.FullName)",
-            "/resource:assets\pj-shoes-logo.jpg,PJShoesSlipRecords.assets.pj-shoes-logo.jpg",
-            "src\SlipRecord.cs", "src\SpreadsheetStore.cs", "src\SettingsStore.cs",
-            "src\LegacyWorkbookImporter.cs", "src\PrinterService.cs", "src\MainForm.cs", "src\Program.cs"
-          )
+          function Build-Exe($label, $csc, $dirs, $wbRoots) {
+            Write-Host "=== Trying $label ==="
+            $names = "System.dll", "System.Core.dll", "System.Drawing.dll", "System.Windows.Forms.dll", "System.Xml.dll", "System.Xml.Linq.dll"
+            $refs = @()
+            foreach ($n in $names) {
+              $dir = $dirs | Where-Object { Test-Path "$_\$n" } | Select-Object -First 1
+              if (-not $dir) { Write-Host "$label : missing $n, skipping"; return $false }
+              $refs += "/reference:$dir\$n"
+            }
+            $wb = $wbRoots | Where-Object { Test-Path $_ } |
+                  ForEach-Object { Get-ChildItem $_ -Recurse -Filter WindowsBase.dll -ErrorAction SilentlyContinue } |
+                  Select-Object -First 1
+            if (-not $wb) { Write-Host "$label : missing WindowsBase.dll, skipping"; return $false }
+            $refs += "/reference:$($wb.FullName)"
 
-          & "$dir\csc.exe" @args
-          if ($LASTEXITCODE -ne 0) { throw "Compile failed" }
+            $cscArgs = @(
+              "/nologo", "/target:winexe", "/platform:x86", "/optimize+", "/debug-", "/codepage:65001",
+              "/win32manifest:app.manifest",
+              "/out:bin\PJShoesSlipRecords.exe"
+            ) + $refs + @(
+              "/resource:assets\pj-shoes-logo.jpg,PJShoesSlipRecords.assets.pj-shoes-logo.jpg",
+              "src\SlipRecord.cs", "src\SpreadsheetStore.cs", "src\SettingsStore.cs",
+              "src\LegacyWorkbookImporter.cs", "src\PrinterService.cs", "src\MainForm.cs", "src\Program.cs"
+            )
+            & $csc @cscArgs | Out-Host
+            return ($LASTEXITCODE -eq 0)
+          }
+
+          $ok = $false
+
+          # Attempt 1: .NET 3.5 target (runs on a stock Windows 7)
+          if (Test-Path "$fw\v3.5\csc.exe") {
+            $dirs35 = @("$ref\v3.5", "$ref\v3.0", "$fw\v3.5", "$fw\v3.0", "$fw\v2.0.50727")
+            $ok = Build-Exe ".NET 3.5" "$fw\v3.5\csc.exe" $dirs35 @("$ref\v3.0", "$fw\v3.0")
+          }
+
+          # Attempt 2: .NET 4 target (needs .NET Framework 4.x on the PC that runs it)
+          if (-not $ok) {
+            Write-Warning "Falling back to the .NET 4 compiler. The EXE needs .NET Framework 4.x on the target PC."
+            $ok = Build-Exe ".NET 4" "$fw\v4.0.30319\csc.exe" @("$fw\v4.0.30319") @("$fw\v4.0.30319\WPF")
+          }
+
+          if (-not $ok) { throw "Compile failed" }
 
       - uses: actions/upload-artifact@v7
         with:
