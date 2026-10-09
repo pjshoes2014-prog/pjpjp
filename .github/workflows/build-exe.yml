@@ -14,7 +14,7 @@ jobs:
   build:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Compile EXE
         shell: pwsh
@@ -60,13 +60,13 @@ jobs:
           & "$dir\csc.exe" @args
           if ($LASTEXITCODE -ne 0) { throw "Compile failed" }
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: PJShoesSlipRecords
           path: windows-app/bin/PJShoesSlipRecords.exe
 
       - name: Attach to GitHub Release (tags only)
         if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: windows-app/bin/PJShoesSlipRecords.exe
