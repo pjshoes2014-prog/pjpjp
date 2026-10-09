@@ -1,0 +1,72 @@
+name: Build Windows EXE
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+    paths: ['windows-app/**']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compile EXE
+        shell: pwsh
+        working-directory: windows-app
+        run: |
+          $fw = "$env:WINDIR\Microsoft.NET\Framework"
+          $dir = "$fw\v3.5"
+          $wbHint = "v3.0"
+
+          if (-not (Test-Path "$dir\csc.exe")) {
+            Write-Host "3.5 compiler not found, trying to enable NetFx3..."
+            try { Enable-WindowsOptionalFeature -Online -FeatureName NetFx3 -All -NoRestart | Out-Null } catch { Write-Host $_ }
+          }
+
+          if (-not (Test-Path "$dir\csc.exe")) {
+            Write-Warning "Falling back to the .NET 4 compiler. The EXE will need .NET Framework 4.x on the target PC."
+            $dir = "$fw\v4.0.30319"
+            $wbHint = "WPF"
+          }
+
+          $wb = Get-ChildItem "$fw", "${env:ProgramFiles(x86)}\Reference Assemblies" -Recurse -Filter WindowsBase.dll -ErrorAction SilentlyContinue |
+                Where-Object { $_.FullName -like "*$wbHint*" } | Select-Object -First 1
+          if (-not $wb) { throw "WindowsBase.dll not found" }
+
+          New-Item -ItemType Directory -Force bin | Out-Null
+
+          $args = @(
+            "/nologo", "/target:winexe", "/platform:x86", "/optimize+", "/debug-", "/codepage:65001",
+            "/win32manifest:app.manifest",
+            "/out:bin\PJShoesSlipRecords.exe",
+            "/reference:$dir\System.dll",
+            "/reference:$dir\System.Core.dll",
+            "/reference:$dir\System.Drawing.dll",
+            "/reference:$dir\System.Windows.Forms.dll",
+            "/reference:$dir\System.Xml.dll",
+            "/reference:$dir\System.Xml.Linq.dll",
+            "/reference:$($wb.FullName)",
+            "/resource:assets\pj-shoes-logo.jpg,PJShoesSlipRecords.assets.pj-shoes-logo.jpg",
+            "src\SlipRecord.cs", "src\SpreadsheetStore.cs", "src\SettingsStore.cs",
+            "src\LegacyWorkbookImporter.cs", "src\PrinterService.cs", "src\MainForm.cs", "src\Program.cs"
+          )
+
+          & "$dir\csc.exe" @args
+          if ($LASTEXITCODE -ne 0) { throw "Compile failed" }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PJShoesSlipRecords
+          path: windows-app/bin/PJShoesSlipRecords.exe
+
+      - name: Attach to GitHub Release (tags only)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: windows-app/bin/PJShoesSlipRecords.exe
