@@ -21,49 +21,45 @@ jobs:
         working-directory: windows-app
         run: |
           $fw = "$env:WINDIR\Microsoft.NET\Framework"
-          $ref = "${env:ProgramFiles(x86)}\Reference Assemblies\Microsoft\Framework"
+          $csc = "$fw\v4.0.30319\csc.exe"
           New-Item -ItemType Directory -Force bin | Out-Null
 
-          function Build-Exe($label, $csc, $dirs, $wbRoots) {
+          function Build-Exe($label, $refDir, $nostd) {
             Write-Host "=== Trying $label ==="
-            $names = "System.dll", "System.Core.dll", "System.Drawing.dll", "System.Windows.Forms.dll", "System.Xml.dll", "System.Xml.Linq.dll"
+            $names = "System.dll", "System.Core.dll", "System.Drawing.dll", "System.Windows.Forms.dll", "System.Xml.dll", "System.Xml.Linq.dll", "WindowsBase.dll"
+            if ($nostd) { $names = @("mscorlib.dll") + $names }
             $refs = @()
             foreach ($n in $names) {
-              $dir = $dirs | Where-Object { Test-Path "$_\$n" } | Select-Object -First 1
-              if (-not $dir) { Write-Host "$label : missing $n, skipping"; return $false }
-              $refs += "/reference:$dir\$n"
+              $path = "$refDir\$n"
+              if (-not (Test-Path $path)) { $path = "$refDir\WPF\$n" }
+              if (-not (Test-Path $path)) { Write-Host "$label : missing $n"; return $false }
+              $refs += "/reference:$path"
             }
-            $wb = $wbRoots | Where-Object { Test-Path $_ } |
-                  ForEach-Object { Get-ChildItem $_ -Recurse -Filter WindowsBase.dll -ErrorAction SilentlyContinue } |
-                  Select-Object -First 1
-            if (-not $wb) { Write-Host "$label : missing WindowsBase.dll, skipping"; return $false }
-            $refs += "/reference:$($wb.FullName)"
-
-            $cscArgs = @(
-              "/nologo", "/target:winexe", "/platform:x86", "/optimize+", "/debug-", "/codepage:65001",
-              "/win32manifest:app.manifest",
-              "/out:bin\PJShoesSlipRecords.exe"
-            ) + $refs + @(
-              "/resource:assets\pj-shoes-logo.jpg,PJShoesSlipRecords.assets.pj-shoes-logo.jpg",
-              "src\SlipRecord.cs", "src\SpreadsheetStore.cs", "src\SettingsStore.cs",
-              "src\LegacyWorkbookImporter.cs", "src\PrinterService.cs", "src\MainForm.cs", "src\Program.cs"
-            )
-            & $csc @cscArgs | Out-Host
+            $flags = @("/nologo", "/target:winexe", "/platform:x86", "/optimize+", "/debug-", "/codepage:65001",
+                       "/win32manifest:app.manifest", "/out:bin\PJShoesSlipRecords.exe")
+            if ($nostd) { $flags += @("/nostdlib+", "/noconfig") }
+            $src = @("/resource:assets\pj-shoes-logo.jpg,PJShoesSlipRecords.assets.pj-shoes-logo.jpg",
+                     "src\SlipRecord.cs", "src\SpreadsheetStore.cs", "src\SettingsStore.cs",
+                     "src\LegacyWorkbookImporter.cs", "src\PrinterService.cs", "src\MainForm.cs", "src\Program.cs")
+            & $csc @flags @refs @src | Out-Host
             return ($LASTEXITCODE -eq 0)
           }
 
           $ok = $false
 
-          # Attempt 1: .NET 3.5 target (runs on a stock Windows 7)
-          if (Test-Path "$fw\v3.5\csc.exe") {
-            $dirs35 = @("$ref\v3.5", "$ref\v3.0", "$fw\v3.5", "$fw\v3.0", "$fw\v2.0.50727")
-            $ok = Build-Exe ".NET 3.5" "$fw\v3.5\csc.exe" $dirs35 @("$ref\v3.0", "$fw\v3.0")
-          }
+          # Attempt 1: true .NET 3.5 build using Microsoft's 3.5 reference assemblies from NuGet.
+          # The EXE runs on a stock Windows 7 with .NET 3.5.1.
+          try {
+            Invoke-WebRequest "https://www.nuget.org/api/v2/package/Microsoft.NETFramework.ReferenceAssemblies.net35/1.0.3" -OutFile refs35.zip
+            Expand-Archive refs35.zip -DestinationPath refs35 -Force
+            $dir35 = (Resolve-Path "refs35\build\.NETFramework\v3.5").Path
+            $ok = Build-Exe ".NET 3.5 target" $dir35 $true
+          } catch { Write-Host "3.5 reference download failed: $_" }
 
-          # Attempt 2: .NET 4 target (needs .NET Framework 4.x on the PC that runs it)
+          # Attempt 2: .NET 4 build (needs .NET Framework 4.x on the PC that runs it)
           if (-not $ok) {
-            Write-Warning "Falling back to the .NET 4 compiler. The EXE needs .NET Framework 4.x on the target PC."
-            $ok = Build-Exe ".NET 4" "$fw\v4.0.30319\csc.exe" @("$fw\v4.0.30319") @("$fw\v4.0.30319\WPF")
+            Write-Warning "Falling back to a .NET 4 build. The EXE needs .NET Framework 4.x on the target PC."
+            $ok = Build-Exe ".NET 4 target" "$fw\v4.0.30319" $false
           }
 
           if (-not $ok) { throw "Compile failed" }
